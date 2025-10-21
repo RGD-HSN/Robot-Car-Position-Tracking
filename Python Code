@@ -1,0 +1,260 @@
+#Import necessary packages
+import apriltag
+import cv2
+import numpy as np
+import time
+import math
+import serial
+import struct
+import threading
+
+# Open serial port
+ser = serial.Serial('/dev/tty.usbserial-10', 57600, timeout=0.1, write_timeout=0.015)
+
+# Ensure the port is open
+if not ser.is_open:
+    ser.open()
+
+# Shared data structure
+data_lock = threading.Lock()
+shared_data = [-120, 45, -67, 89, 23, -56, 78, 90, -34, 21, 11, -9, 5, -3, 8, 4, -2, 6, 7, 1, -88, 99, -100, 25]
+april_tag_info = {}  # Shared AprilTag info
+
+
+# Function to send serial data (Runs in Thread 1)
+def send_data():
+    while True:
+        with data_lock:
+            data_copy = [max(-128, min(127, x)) for x in shared_data]
+
+        start_time = time.perf_counter()
+        start_byte = 0xAA
+        end_byte = 0x55
+        packet = struct.pack('B24bB', start_byte, *data_copy[:24], end_byte)
+
+        ser.write(packet)
+        ser.flush()
+
+        end_time = time.perf_counter()
+        elapsed_time = (end_time - start_time) * 1000
+        # print(f"Sent: {data_copy[:24]} | Time: {elapsed_time:.3f} ms")
+
+        time.sleep(0.02)
+        time.sleep(0.02)
+
+
+# Function to modify data dynamically (Runs in Thread 2)
+def modify_data():
+    class PIDController:
+        def __init__(self, Kp, Ki, Kd, setpoint):
+            self.Kp = Kp
+            self.Ki = Ki
+            self.Kd = Kd
+            self.setpoint = setpoint
+            self.previous_error = 0
+            self.integral = 0
+
+        def update(self, current_value, dt):
+            error = self.setpoint - current_value
+            self.integral += error * dt
+            if abs(error) < 5:  # reeset Control
+                self.integral = 0
+            derivative = (error - self.previous_error) / dt if dt > 0 else 0
+            output = self.Kp * error + self.Ki * self.integral + self.Kd * derivative
+            self.previous_error = error
+            return output
+
+    class PIDControllerz:
+        def __init__(selfz, Kp, Ki, Kd, setpoint=45):
+            selfz.Kp = Kp
+            selfz.Ki = Ki
+            selfz.Kd = Kd
+            selfz.setpoint = setpoint
+            selfz.previous_error = 0
+            selfz.integral = 0
+
+        def update(selfz, current_value, dt):
+            error = selfz.setpoint - current_value
+            selfz.integral += error * dt
+            if abs(error) < 5:  # reeset Control
+                selfz.integral = 0
+            derivative = (error - selfz.previous_error) / dt if dt > 0 else 0
+            output = selfz.Kp * error + selfz.Ki * selfz.integral + selfz.Kd * derivative
+            selfz.previous_error = error
+            return output
+
+    # Initialize PID controllers for X and Y (assuming center of frame)
+    pid_x1 = PIDController(Kp=0.5, Ki=0.5, Kd=0.1, setpoint=500)
+    pid_y1 = PIDController(Kp=0.05, Ki=0.5, Kd=0.1, setpoint=500)
+    pid_z1 = PIDControllerz(Kp=01.824205, Ki=0.842615, Kd=0.1, setpoint=45)
+    Xt = np.zeros((18, 1))
+    Vt = np.zeros((18, 1))
+    Wm = np.zeros((24, 1))
+
+    x1 = 0  # Default center X
+    y1 = 0  # Default center Y
+    angle1 = 0
+    while True:
+        t = time.perf_counter()
+
+        dt = 0.01  # Time step in seconds (same as sleep)
+
+        with data_lock:
+            # Saturate values and copy to shared_data
+            for i in range(len(shared_data)):
+                shared_data[i] = max(-128, min(127, int(Wm[i].item())))
+
+            # Default values
+
+            # Use AprilTag 29 data if detected
+            if 2 in april_tag_info:
+                x1, y1 = april_tag_info[2]['center']
+                angle1 = april_tag_info[2]['angle']
+                # print(f"[MODIFY] AprilTag 29 - Center: ({x1}, {y1}), Angle: {angle1:.2f}°")
+        # print(x1)
+
+        print(t)
+
+        # PID update for desired positions
+        pid_x1.setpoint = 1000
+        pid_y1.setpoint = 500
+
+        pid_z1.setpoint = 0
+
+
+
+        print(pid_x1.setpoint)
+        print(pid_y1.setpoint)
+        print(pid_z1.setpoint)
+
+        Vx = pid_x1.update(x1, dt)
+        Vy = pid_y1.update(y1, dt)
+        Vz = pid_z1.update(angle1, dt)
+        Vt[0] = 0*Vx
+        Vt[1] = 0*-Vx
+        Vt[2] = Vz  # You can replace with angle PID later if needed
+
+
+
+        # Rotation matrix from global to robot frame
+        theta1 = math.radians(angle1)
+        R = np.array([
+            [math.cos(theta1), -math.sin(theta1), 0],
+            [math.sin(theta1), math.cos(theta1), 0],
+            [0, 0, 1]
+        ])
+        R = np.kron(np.eye(6), R)
+        VttI = R @ Vt
+
+        # Mecanum inverse kinematics matrix
+        M = np.array([
+            [1, 1, 1],
+            [1, -1, 1],
+            [-1, -1, 1],
+            [-1, 1, 1]
+        ])
+        M = np.kron(np.eye(6), M)
+        Wm = M @ VttI
+
+        # print(f"PID Output Vx: {Vx:.2f}, Vy: {Vy:.2f}")
+        # print(f"Wheel Speeds:\n{Wm}")
+
+        time.sleep(dt)
+        end_t = time.perf_counter()
+        elapsed_t = (end_t - t) * 1000
+        # print(f"Sent: {Wm[:4]} | Time: {elapsed_t:.3f} ms")
+
+
+# Third Thread but also main thread
+serial_thread = threading.Thread(target=send_data, daemon=True)
+calculation_thread = threading.Thread(target=modify_data, daemon=True)
+
+serial_thread.start()
+calculation_thread.start()
+
+# -------- AprilTag Detection (Main Thread) --------
+# Define the AprilTags detector options for tag16h5
+options = apriltag.DetectorOptions(families="tag16h5")
+detector = apriltag.Detector(options)
+
+# Start capturing video from the camera
+print("[INFO] Starting video stream...")
+cap = cv2.VideoCapture(0)
+
+# Set camera resolution (optional)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1900)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+
+# Storage for tag data
+tag_data_list = []
+
+# Loop to continuously capture frames
+while True:
+
+    start_time = time.time()
+
+    ret, frame = cap.read()
+    if not ret:
+        print("[ERROR] Failed to capture image")
+        break
+
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    _, thresh = cv2.threshold(blurred, 150, 255, cv2.THRESH_BINARY)
+
+    # print("[INFO] Detecting AprilTags...")
+    results = detector.detect(thresh)
+
+
+    # print(f"[INFO] {len(results)} total AprilTags detected")
+
+    tag_data_list.clear()
+
+    with data_lock:
+        april_tag_info.clear()
+
+        for result in results:
+            (top_left, top_right, bottom_right, bottom_left) = result.corners
+            top_left = (int(top_left[0]), int(top_left[1]))
+            top_right = (int(top_right[0]), int(top_right[1]))
+            bottom_right = (int(bottom_right[0]), int(bottom_right[1]))
+            bottom_left = (int(bottom_left[0]), int(bottom_left[1]))
+
+            center_x = int((top_left[0] + bottom_right[0]) / 2)
+            center_y = int((top_left[1] + bottom_right[1]) / 2)
+            center = (center_x, center_y)
+            angle = math.degrees(math.atan2(top_right[1] - top_left[1], top_right[0] - top_left[0]))
+
+            tag_data = {
+                "id": result.tag_id,
+                "center": center,
+                "angle": angle
+            }
+            tag_data_list.append(tag_data)
+
+            april_tag_info[result.tag_id] = {
+                'center': center,
+                'angle': angle
+            }
+
+            cv2.polylines(frame, [np.array([top_left, top_right, bottom_right, bottom_left], dtype=np.int32)],
+                          isClosed=True, color=(0, 255, 0), thickness=2)
+            cv2.circle(frame, center, 5, (255, 0, 0), -1)
+            cv2.putText(frame, f"ID: {result.tag_id}", (top_left[0], top_left[1] - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+            cv2.putText(frame, f"({center_x}, {center_y})", (center_x + 10, center_y - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+            cv2.putText(frame, f"Angle: {angle:.2f}°", (center_x + 10, center_y + 20),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+
+    # print(f"[INFO] Detected Tags Data: {tag_data_list}")
+    cv2.imshow("AprilTag Detection", frame)
+
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+    cycle_time = time.time() - start_time
+    # print(f"[INFO] Cycle time: {cycle_time:.4f} seconds")
+
+cap.release()
+cv2.destroyAllWindows()
