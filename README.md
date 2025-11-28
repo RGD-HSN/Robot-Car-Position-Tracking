@@ -22,7 +22,8 @@ The system consists of three main threads: (so it works in parallel)
 ---
 overall System: 
 1. the python code for centralized control
-2. the python transmitter code 
+2. the transmitter code from ardunio master nrf
+3. the reciver code from arduino slave nrf
 ---
 
 ## Hardware 
