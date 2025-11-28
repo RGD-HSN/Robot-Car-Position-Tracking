@@ -35,6 +35,6 @@ overall System:
 - **Communication:** nrf24l01; one connected directly to the PC and the other on the robot.
 
 
+![Screenshot 2025-11-28 at 9 51 30 PM](https://github.com/user-attachments/assets/e4c95092-1cfe-4e17-b12c-b6b91c8a0468)
 
-![Screenshot 2025-11-28 at 9 51 30 PM](https://github.com/user-attachments/assets/a53260ed-f7fb-47de-ab87-598aa4dd9628)
 
